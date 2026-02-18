@@ -2,8 +2,11 @@
 
 This repository is no longer in use and is not receiving updates, fixes, or support.
 
-You can now find the latest code at:
-https://github.com/hailo-ai/hailo-apps
+The the latest code is available in Hailo-Apps, organized as follows:
+- C++ applications:
+https://github.com/hailo-ai/hailo-apps/tree/main/hailo_apps/cpp
+- Python standalone applications:
+https://github.com/hailo-ai/hailo-apps/tree/main/hailo_apps/python/standalone_apps
 
 ---
 
