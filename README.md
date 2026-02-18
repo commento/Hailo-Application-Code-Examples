@@ -3,9 +3,9 @@
 This repository is no longer in use and is not receiving updates, fixes, or support.
 
 The the latest code is available in Hailo-Apps, organized as follows:
-- C++ applications:
+- C++ Apps:
 https://github.com/hailo-ai/hailo-apps/tree/main/hailo_apps/cpp
-- Python standalone applications:
+- Python Apps:
 https://github.com/hailo-ai/hailo-apps/tree/main/hailo_apps/python/standalone_apps
 
 ---
