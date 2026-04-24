@@ -8,6 +8,7 @@ import threading
 from functools import partial
 from types import SimpleNamespace
 import numpy as np
+import cv2
 import argparse
 from pathlib import Path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -147,6 +148,18 @@ def parse_args() -> argparse.Namespace:
         help="Aura overlay opacity."
     )
     parser.add_argument(
+        "--aura-render-scale",
+        type=float,
+        default=0.5,
+        help="Internal aura render scale. Lower is faster; 0.5 renders aura at quarter pixel count."
+    )
+    parser.add_argument(
+        "--aura-person-edges",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use person edge detection inside the aura. Disabled by default to keep live latency low."
+    )
+    parser.add_argument(
         "--aura-background-dim",
         type=float,
         default=0.0,
@@ -163,6 +176,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.34,
         help="Strength of the aura edge fisheye distortion."
+    )
+    parser.add_argument(
+        "--aura-edge-warp-scale",
+        type=float,
+        default=0.5,
+        help="Internal resolution scale for edge fisheye. Lower is faster; 0.5 uses about a quarter of the remap pixels."
     )
     parser.add_argument(
         "--aura-debug-boxes",
@@ -266,8 +285,9 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
           enable_tracking=False, show_fps=False, framerate=None, draw_trail=False,
           aura=False, aura_audio_device=None, aura_audio_threshold=0.004,
           aura_audio_scale=20.0, aura_radius=120, aura_alpha=0.58,
-          aura_background_dim=0.0, aura_edge_warp=False, aura_edge_warp_strength=0.34,
-          aura_debug_boxes=False,
+          aura_render_scale=0.5, aura_person_edges=False, aura_background_dim=0.0,
+          aura_edge_warp=False, aura_edge_warp_strength=0.34,
+          aura_edge_warp_scale=0.5, aura_debug_boxes=False,
           record_performance=False, recording_output=None, ffmpeg_bin="ffmpeg",
           audio_sample_rate=48000, audio_block_size=512) -> None:
     """
@@ -278,6 +298,8 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
 
     # Initialize input source from string: "camera", video file, or image folder.
     cap, images = init_input_source(input, batch_size, camera_resolution)
+    if aura and cap is not None:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     tracker = None
     fps_tracker = None
     if show_fps:
@@ -288,8 +310,8 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
         tracker_config = config_data.get("visualization_params", {}).get("tracker", {})
         tracker = BYTETracker(SimpleNamespace(**tracker_config))
 
-    input_queue = queue.Queue()
-    output_queue = queue.Queue()
+    input_queue = queue.Queue(maxsize=2 if aura else 0)
+    output_queue = queue.Queue(maxsize=2 if aura else 0)
 
     audio_analyzer = None
     if aura:
@@ -301,8 +323,11 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
             background_dim=aura_background_dim,
             audio_threshold=aura_audio_threshold,
             audio_scale=aura_audio_scale,
+            render_scale=aura_render_scale,
+            person_edges=aura_person_edges,
             edge_warp=aura_edge_warp,
             edge_warp_strength=aura_edge_warp_strength,
+            edge_warp_scale=aura_edge_warp_scale,
         )
         post_process_callback_fn = AuraPostProcessor(
             labels=labels,
@@ -468,8 +493,10 @@ def main() -> None:
           args.output_resolution, args.track, args.show_fps, args.framerate, args.draw_trail,
           args.aura, args.aura_audio_device, args.aura_audio_threshold,
           args.aura_audio_scale, args.aura_radius, args.aura_alpha,
+          args.aura_render_scale, args.aura_person_edges,
           args.aura_background_dim, args.aura_edge_warp,
-          args.aura_edge_warp_strength, args.aura_debug_boxes,
+          args.aura_edge_warp_strength, args.aura_edge_warp_scale,
+          args.aura_debug_boxes,
           args.record_performance, args.recording_output, args.ffmpeg_bin,
           args.audio_sample_rate, args.audio_block_size)
 

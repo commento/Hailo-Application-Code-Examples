@@ -301,16 +301,22 @@ class RisingAuraRenderer:
         background_dim: float,
         audio_threshold: float,
         audio_scale: float,
+        render_scale: float = 0.5,
+        person_edges: bool = False,
         edge_warp: bool = False,
         edge_warp_strength: float = 0.34,
+        edge_warp_scale: float = 0.5,
     ):
         self.aura_radius = aura_radius
         self.aura_alpha = aura_alpha
         self.background_dim = background_dim
         self.audio_threshold = audio_threshold
         self.audio_scale = audio_scale
+        self.render_scale = render_scale
+        self.person_edges = person_edges
         self.edge_warp = edge_warp
         self.edge_warp_strength = edge_warp_strength
+        self.edge_warp_scale = edge_warp_scale
         self.aura_states: dict[int, float] = {}
         self.age_states: dict[int, int] = {}
         self._plume_layer: np.ndarray | None = None
@@ -321,15 +327,15 @@ class RisingAuraRenderer:
         aura_level = self._audio_gate(audio)
         if aura_level <= 0.001 or not performers:
             self.aura_states.clear()
-            self._plume_layer = np.zeros_like(frame_rgb)
             self._scene_energy = self._ease(self._scene_energy, 0.0, attack=0.0, release=0.04)
             return frame_rgb.copy()
 
-        self._ensure_plume(frame_rgb)
-        mist = np.zeros_like(frame_rgb)
+        work_frame, work_performers, scale = self._prepare_aura_workspace(frame_rgb, performers)
+        self._ensure_plume(work_frame)
+        mist = np.zeros_like(work_frame)
         active_ids = set()
 
-        for performer in performers:
+        for performer in work_performers:
             active_ids.add(performer.track_id)
             previous = self.aura_states.get(performer.track_id, 0.0)
             age_boost = min(1.0, performer.age / 8.0)
@@ -353,7 +359,10 @@ class RisingAuraRenderer:
 
         plume = self._update_plume_layer(mist)
         cv2.add(mist, plume, dst=mist)
-        mist = self._soft_blur(mist, sigma=18)
+        mist = self._soft_blur(mist, sigma=max(6.0, 18.0 * scale))
+        if scale < 0.999:
+            mist = cv2.resize(mist, (frame_rgb.shape[1], frame_rgb.shape[0]), interpolation=cv2.INTER_LINEAR)
+
         base = frame_rgb.copy()
         if self.background_dim > 0.0:
             base = cv2.convertScaleAbs(base, alpha=max(0.0, 1.0 - self.background_dim), beta=0)
@@ -386,14 +395,15 @@ class RisingAuraRenderer:
         radius = int(self.aura_radius * (0.75 + presence * 0.7 + min(audio.peak, 0.2)))
         color = self._aura_tone(presence)
 
-        mask, x0, y0 = self._person_edge_mask(frame_rgb, performer)
-        if mask is not None:
-            upper = np.zeros_like(mask)
-            cv2.rectangle(upper, (0, 0), (upper.shape[1], max(1, int(upper.shape[0] * 0.58))), 255, -1)
-            mask = cv2.bitwise_and(mask, upper)
-            halo = cv2.dilate(mask, np.ones((11, 11), np.uint8), iterations=1)
-            halo = cv2.GaussianBlur(halo, (0, 0), sigmaX=4.5, sigmaY=4.5)
-            self._apply_mask(mist, halo, x0, y0, color)
+        if self.person_edges:
+            mask, x0, y0 = self._person_edge_mask(frame_rgb, performer)
+            if mask is not None:
+                upper = np.zeros_like(mask)
+                cv2.rectangle(upper, (0, 0), (upper.shape[1], max(1, int(upper.shape[0] * 0.58))), 255, -1)
+                mask = cv2.bitwise_and(mask, upper)
+                halo = cv2.dilate(mask, np.ones((7, 7), np.uint8), iterations=1)
+                halo = cv2.GaussianBlur(halo, (0, 0), sigmaX=3.5, sigmaY=3.5)
+                self._apply_mask(mist, halo, x0, y0, color)
 
         shoulder_y = int(y + h * 0.28)
         shoulder_axes = (max(18, int(w * 0.46)), max(12, int(h * (0.10 + presence * 0.05))))
@@ -465,6 +475,37 @@ class RisingAuraRenderer:
         if self._plume_layer is None or self._plume_layer.shape != frame.shape:
             self._plume_layer = np.zeros_like(frame)
 
+    def _prepare_aura_workspace(
+        self,
+        frame_rgb: np.ndarray,
+        performers: list[TrackedPerformer],
+    ) -> tuple[np.ndarray, list[TrackedPerformer], float]:
+        scale = float(np.clip(self.render_scale, 0.25, 1.0))
+        if scale >= 0.999:
+            return frame_rgb, performers, 1.0
+
+        h, w = frame_rgb.shape[:2]
+        work_w = max(16, int(w * scale))
+        work_h = max(16, int(h * scale))
+        work_frame = cv2.resize(frame_rgb, (work_w, work_h), interpolation=cv2.INTER_AREA)
+        scaled = []
+        for performer in performers:
+            x, y, bw, bh = performer.bbox
+            scaled.append(
+                TrackedPerformer(
+                    track_id=performer.track_id,
+                    bbox=(
+                        int(x * scale),
+                        int(y * scale),
+                        max(1, int(bw * scale)),
+                        max(1, int(bh * scale)),
+                    ),
+                    center=(int(performer.center[0] * scale), int(performer.center[1] * scale)),
+                    age=performer.age,
+                )
+            )
+        return work_frame, scaled, scale
+
     def _aura_tone(self, presence: float) -> tuple[int, int, int]:
         return (
             min(235, 135 + int(presence * 45)),
@@ -489,31 +530,43 @@ class RisingAuraRenderer:
         if strength <= 0.002:
             return frame
 
-        h, w = frame.shape[:2]
-        scale = 0.25
-        grid_w = max(8, int(w * scale))
-        grid_h = max(8, int(h * scale))
-        yy, xx = np.mgrid[0:grid_h, 0:grid_w].astype(np.float32)
-        xx *= w / grid_w
-        yy *= h / grid_h
+        full_h, full_w = frame.shape[:2]
+        warp_scale = float(np.clip(self.edge_warp_scale, 0.2, 1.0))
+        if warp_scale < 0.999:
+            work_w = max(16, int(full_w * warp_scale))
+            work_h = max(16, int(full_h * warp_scale))
+            work_frame = cv2.resize(frame, (work_w, work_h), interpolation=cv2.INTER_AREA)
+        else:
+            work_w, work_h = full_w, full_h
+            work_frame = frame
 
-        cx = w * 0.5
-        cy = h * 0.5
-        norm_x = (xx - cx) / max(w * 0.5, 1.0)
-        norm_y = (yy - cy) / max(h * 0.5, 1.0)
+        grid_scale = 0.25
+        grid_w = max(8, int(work_w * grid_scale))
+        grid_h = max(8, int(work_h * grid_scale))
+        yy, xx = np.mgrid[0:grid_h, 0:grid_w].astype(np.float32)
+        xx *= work_w / grid_w
+        yy *= work_h / grid_h
+
+        cx = work_w * 0.5
+        cy = work_h * 0.5
+        norm_x = (xx - cx) / max(work_w * 0.5, 1.0)
+        norm_y = (yy - cy) / max(work_h * 0.5, 1.0)
         radius = np.sqrt(norm_x * norm_x + norm_y * norm_y)
 
         edge = np.clip((radius - 0.58) / 0.42, 0.0, 1.0)
         edge = edge * edge * (3.0 - 2.0 * edge)
         stretch = 1.0 + edge * strength * 0.34
 
-        map_x_small = cx + norm_x * stretch * (w * 0.5)
-        map_y_small = cy + norm_y * stretch * (h * 0.5)
-        map_x = cv2.resize(map_x_small, (w, h), interpolation=cv2.INTER_CUBIC)
-        map_y = cv2.resize(map_y_small, (w, h), interpolation=cv2.INTER_CUBIC)
-        map_x = np.clip(map_x, 0, w - 1).astype(np.float32)
-        map_y = np.clip(map_y, 0, h - 1).astype(np.float32)
-        return cv2.remap(frame, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT101)
+        map_x_small = cx + norm_x * stretch * (work_w * 0.5)
+        map_y_small = cy + norm_y * stretch * (work_h * 0.5)
+        map_x = cv2.resize(map_x_small, (work_w, work_h), interpolation=cv2.INTER_CUBIC)
+        map_y = cv2.resize(map_y_small, (work_w, work_h), interpolation=cv2.INTER_CUBIC)
+        map_x = np.clip(map_x, 0, work_w - 1).astype(np.float32)
+        map_y = np.clip(map_y, 0, work_h - 1).astype(np.float32)
+        warped = cv2.remap(work_frame, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT101)
+        if warp_scale < 0.999:
+            warped = cv2.resize(warped, (full_w, full_h), interpolation=cv2.INTER_LINEAR)
+        return warped
 
     def _ease(self, current: float, target: float, attack: float, release: float) -> float:
         if target > current:
@@ -664,6 +717,14 @@ def visualize_with_aura_recording(
 
         while True:
             result = output_queue.get()
+            while True:
+                try:
+                    newer_result = output_queue.get_nowait()
+                except Empty:
+                    break
+                output_queue.task_done()
+                result = newer_result
+
             if result is None:
                 output_queue.task_done()
                 break
