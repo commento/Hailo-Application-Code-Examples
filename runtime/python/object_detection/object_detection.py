@@ -149,8 +149,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--aura-background-dim",
         type=float,
-        default=0.45,
-        help="Background dim amount while the aura is active."
+        default=0.0,
+        help="Background dim amount while the aura is active. Defaults to 0.0 to keep the live image bright."
+    )
+    parser.add_argument(
+        "--aura-edge-warp",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable fisheye-style distortion on the screen edges while the aura is active."
+    )
+    parser.add_argument(
+        "--aura-edge-warp-strength",
+        type=float,
+        default=0.34,
+        help="Strength of the aura edge fisheye distortion."
     )
     parser.add_argument(
         "--aura-debug-boxes",
@@ -254,7 +266,8 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
           enable_tracking=False, show_fps=False, framerate=None, draw_trail=False,
           aura=False, aura_audio_device=None, aura_audio_threshold=0.004,
           aura_audio_scale=20.0, aura_radius=120, aura_alpha=0.58,
-          aura_background_dim=0.45, aura_debug_boxes=False,
+          aura_background_dim=0.0, aura_edge_warp=True, aura_edge_warp_strength=0.34,
+          aura_debug_boxes=False,
           record_performance=False, recording_output=None, ffmpeg_bin="ffmpeg",
           audio_sample_rate=48000, audio_block_size=512) -> None:
     """
@@ -288,6 +301,8 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
             background_dim=aura_background_dim,
             audio_threshold=aura_audio_threshold,
             audio_scale=aura_audio_scale,
+            edge_warp=aura_edge_warp,
+            edge_warp_strength=aura_edge_warp_strength,
         )
         post_process_callback_fn = AuraPostProcessor(
             labels=labels,
@@ -453,7 +468,8 @@ def main() -> None:
           args.output_resolution, args.track, args.show_fps, args.framerate, args.draw_trail,
           args.aura, args.aura_audio_device, args.aura_audio_threshold,
           args.aura_audio_scale, args.aura_radius, args.aura_alpha,
-          args.aura_background_dim, args.aura_debug_boxes,
+          args.aura_background_dim, args.aura_edge_warp,
+          args.aura_edge_warp_strength, args.aura_debug_boxes,
           args.record_performance, args.recording_output, args.ffmpeg_bin,
           args.audio_sample_rate, args.audio_block_size)
 

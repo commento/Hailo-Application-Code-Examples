@@ -138,9 +138,17 @@ Useful aura options:
 - `--aura-audio-device`: microphone device id/name. If omitted, the system default input is used.
 - `--aura-audio-threshold`: lower values make the aura react to quieter audio.
 - `--aura-audio-scale`: higher values make the aura more intense.
-- `--aura-radius`, `--aura-alpha`, `--aura-background-dim`: visual tuning.
+- `--aura-radius`, `--aura-alpha`, `--aura-background-dim`: visual tuning. Background dim defaults to `0.0`.
+- `--aura-edge-warp` / `--no-aura-edge-warp`: enable or disable edge-only fisheye distortion.
+- `--aura-edge-warp-strength`: controls how strongly the screen edges bend while the aura is active.
 - `--aura-debug-boxes`: show tracked person boxes over the effect.
 - `--ffmpeg-bin`: ffmpeg executable path.
+
+For live projection, the aura preview window fills the display. If the Linux
+display size cannot be detected automatically, set it explicitly:
+```shell script
+AURA_DISPLAY_SIZE=1920x1080 ./object_detection.py -n ./yolov8n.hef -i camera --aura
+```
 
 **Inference on a camera stream with custom frame rate**
 ```shell script

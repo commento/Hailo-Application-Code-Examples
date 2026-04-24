@@ -7,6 +7,7 @@ from queue import Empty, Queue
 from threading import Event, Lock, Thread
 from subprocess import TimeoutExpired
 import os
+import platform
 import queue
 import subprocess
 import time
@@ -300,21 +301,28 @@ class RisingAuraRenderer:
         background_dim: float,
         audio_threshold: float,
         audio_scale: float,
+        edge_warp: bool = True,
+        edge_warp_strength: float = 0.34,
     ):
         self.aura_radius = aura_radius
         self.aura_alpha = aura_alpha
         self.background_dim = background_dim
         self.audio_threshold = audio_threshold
         self.audio_scale = audio_scale
+        self.edge_warp = edge_warp
+        self.edge_warp_strength = edge_warp_strength
         self.aura_states: dict[int, float] = {}
         self.age_states: dict[int, int] = {}
         self._plume_layer: np.ndarray | None = None
+        self._smoothed_audio_gate = 0.0
+        self._scene_energy = 0.0
 
     def render(self, frame_rgb: np.ndarray, performers: list[TrackedPerformer], audio: AudioFeatures) -> np.ndarray:
         aura_level = self._audio_gate(audio)
-        if aura_level <= 0.001:
+        if aura_level <= 0.001 or not performers:
             self.aura_states.clear()
             self._plume_layer = np.zeros_like(frame_rgb)
+            self._scene_energy = self._ease(self._scene_energy, 0.0, attack=0.0, release=0.04)
             return frame_rgb.copy()
 
         self._ensure_plume(frame_rgb)
@@ -326,7 +334,7 @@ class RisingAuraRenderer:
             previous = self.aura_states.get(performer.track_id, 0.0)
             age_boost = min(1.0, performer.age / 8.0)
             target = aura_level * (0.35 + 0.65 * age_boost)
-            presence = self._ease(previous, target, attack=0.18, release=0.12)
+            presence = self._ease(previous, target, attack=0.055, release=0.045)
             self.aura_states[performer.track_id] = presence
             if presence <= 0.02:
                 continue
@@ -334,22 +342,36 @@ class RisingAuraRenderer:
 
         for track_id in list(self.aura_states.keys()):
             if track_id not in active_ids:
-                faded = self._ease(self.aura_states[track_id], 0.0, attack=0.0, release=0.08)
+                faded = self._ease(self.aura_states[track_id], 0.0, attack=0.0, release=0.045)
                 if faded <= 0.02:
                     del self.aura_states[track_id]
                 else:
                     self.aura_states[track_id] = faded
 
+        active_presence = max(self.aura_states.values(), default=0.0)
+        self._scene_energy = self._ease(self._scene_energy, active_presence, attack=0.035, release=0.035)
+
         plume = self._update_plume_layer(mist)
         cv2.add(mist, plume, dst=mist)
         mist = self._soft_blur(mist, sigma=18)
-        dimmed = cv2.convertScaleAbs(frame_rgb, alpha=max(0.0, 1.0 - self.background_dim), beta=0)
-        return cv2.addWeighted(dimmed, 1.0, mist, self.aura_alpha, 0.0)
+        base = frame_rgb.copy()
+        if self.background_dim > 0.0:
+            base = cv2.convertScaleAbs(base, alpha=max(0.0, 1.0 - self.background_dim), beta=0)
+        if self.edge_warp and self.edge_warp_strength > 0.0:
+            base = self._apply_edge_fisheye(base, self.edge_warp_strength * self._scene_energy)
+        return cv2.addWeighted(base, 1.0, mist, self.aura_alpha, 0.0)
 
     def _audio_gate(self, audio: AudioFeatures) -> float:
         rms_energy = max(0.0, (audio.rms - self.audio_threshold) * self.audio_scale)
-        peak_energy = max(0.0, (audio.peak - self.audio_threshold * 1.1) * (self.audio_scale * 0.3))
-        return min(1.0, rms_energy * 0.85 + peak_energy * 0.15)
+        peak_energy = max(0.0, (audio.peak - self.audio_threshold * 1.1) * (self.audio_scale * 0.12))
+        target = min(1.0, rms_energy * 0.94 + peak_energy * 0.06)
+        self._smoothed_audio_gate = self._ease(
+            self._smoothed_audio_gate,
+            target,
+            attack=0.035,
+            release=0.028,
+        )
+        return self._smoothed_audio_gate
 
     def _draw_person_aura(
         self,
@@ -462,6 +484,37 @@ class RisingAuraRenderer:
         blurred = cv2.GaussianBlur(small, (0, 0), sigmaX=max(1.0, sigma / 2.0), sigmaY=max(1.0, sigma / 2.0))
         return cv2.resize(blurred, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
 
+    def _apply_edge_fisheye(self, frame: np.ndarray, strength: float) -> np.ndarray:
+        strength = float(np.clip(strength, 0.0, 1.0))
+        if strength <= 0.002:
+            return frame
+
+        h, w = frame.shape[:2]
+        scale = 0.25
+        grid_w = max(8, int(w * scale))
+        grid_h = max(8, int(h * scale))
+        yy, xx = np.mgrid[0:grid_h, 0:grid_w].astype(np.float32)
+        xx *= w / grid_w
+        yy *= h / grid_h
+
+        cx = w * 0.5
+        cy = h * 0.5
+        norm_x = (xx - cx) / max(w * 0.5, 1.0)
+        norm_y = (yy - cy) / max(h * 0.5, 1.0)
+        radius = np.sqrt(norm_x * norm_x + norm_y * norm_y)
+
+        edge = np.clip((radius - 0.58) / 0.42, 0.0, 1.0)
+        edge = edge * edge * (3.0 - 2.0 * edge)
+        stretch = 1.0 + edge * strength * 0.34
+
+        map_x_small = cx + norm_x * stretch * (w * 0.5)
+        map_y_small = cy + norm_y * stretch * (h * 0.5)
+        map_x = cv2.resize(map_x_small, (w, h), interpolation=cv2.INTER_CUBIC)
+        map_y = cv2.resize(map_y_small, (w, h), interpolation=cv2.INTER_CUBIC)
+        map_x = np.clip(map_x, 0, w - 1).astype(np.float32)
+        map_y = np.clip(map_y, 0, h - 1).astype(np.float32)
+        return cv2.remap(frame, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT101)
+
     def _ease(self, current: float, target: float, attack: float, release: float) -> float:
         if target > current:
             return current + (target - current) * attack
@@ -573,8 +626,14 @@ def visualize_with_aura_recording(
 
     try:
         if cap is not None:
-            cv2.namedWindow("Output", cv2.WND_PROP_FULLSCREEN)
+            cv2.namedWindow("Output", cv2.WINDOW_NORMAL)
+            if hasattr(cv2, "WND_PROP_ASPECT_RATIO") and hasattr(cv2, "WINDOW_FREERATIO"):
+                cv2.setWindowProperty("Output", cv2.WND_PROP_ASPECT_RATIO, cv2.WINDOW_FREERATIO)
             cv2.setWindowProperty("Output", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            try:
+                cv2.moveWindow("Output", 0, 0)
+            except cv2.error:
+                pass
 
             base_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
             base_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
@@ -582,6 +641,7 @@ def visualize_with_aura_recording(
                 frame_width, frame_height = output_resolution
             else:
                 frame_width, frame_height = base_width, base_height
+            display_size = _detect_display_size() or (frame_width, frame_height)
 
             if record_audio_video:
                 cam_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -624,7 +684,7 @@ def visualize_with_aura_recording(
             frame_to_show = _resize_frame_for_output(bgr_frame, output_resolution)
 
             if cap is not None:
-                cv2.imshow("Output", frame_to_show)
+                cv2.imshow("Output", _prepare_fullscreen_frame(frame_to_show, display_size))
                 if recorder is not None and frame_width and frame_height:
                     recorder.write(cv2.resize(frame_to_show, (frame_width, frame_height)))
             else:
@@ -651,3 +711,57 @@ def _resize_frame_for_output(frame: np.ndarray, resolution):
 
     target_w, target_h = resolution
     return cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
+
+
+def _prepare_fullscreen_frame(frame: np.ndarray, display_size: tuple[int, int] | None) -> np.ndarray:
+    if display_size is None:
+        return frame
+
+    display_w, display_h = display_size
+    frame_h, frame_w = frame.shape[:2]
+    if display_w <= 0 or display_h <= 0 or frame_w <= 0 or frame_h <= 0:
+        return frame
+
+    scale = max(display_w / frame_w, display_h / frame_h)
+    out_w = max(1, int(frame_w * scale))
+    out_h = max(1, int(frame_h * scale))
+    resized = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+    x0 = max(0, (out_w - display_w) // 2)
+    y0 = max(0, (out_h - display_h) // 2)
+    return resized[y0:y0 + display_h, x0:x0 + display_w]
+
+
+def _detect_display_size() -> tuple[int, int] | None:
+    env_size = os.environ.get("AURA_DISPLAY_SIZE")
+    if env_size and "x" in env_size:
+        width_text, height_text = env_size.lower().split("x", 1)
+        try:
+            return int(width_text), int(height_text)
+        except ValueError:
+            pass
+
+    if platform.system() != "Linux":
+        return None
+
+    try:
+        result = subprocess.run(
+            ["xrandr", "--current"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except Exception:
+        return None
+
+    for line in result.stdout.splitlines():
+        if "*" not in line:
+            continue
+        parts = line.strip().split()
+        if not parts or "x" not in parts[0]:
+            continue
+        width_text, height_text = parts[0].split("x", 1)
+        try:
+            return int(width_text), int(height_text)
+        except ValueError:
+            continue
+    return None
