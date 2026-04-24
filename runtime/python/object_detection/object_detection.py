@@ -155,7 +155,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--aura-edge-warp",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Enable fisheye-style distortion on the screen edges while the aura is active."
     )
     parser.add_argument(
@@ -266,7 +266,7 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
           enable_tracking=False, show_fps=False, framerate=None, draw_trail=False,
           aura=False, aura_audio_device=None, aura_audio_threshold=0.004,
           aura_audio_scale=20.0, aura_radius=120, aura_alpha=0.58,
-          aura_background_dim=0.0, aura_edge_warp=True, aura_edge_warp_strength=0.34,
+          aura_background_dim=0.0, aura_edge_warp=False, aura_edge_warp_strength=0.34,
           aura_debug_boxes=False,
           record_performance=False, recording_output=None, ffmpeg_bin="ffmpeg",
           audio_sample_rate=48000, audio_block_size=512) -> None:

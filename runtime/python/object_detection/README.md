@@ -139,7 +139,7 @@ Useful aura options:
 - `--aura-audio-threshold`: lower values make the aura react to quieter audio.
 - `--aura-audio-scale`: higher values make the aura more intense.
 - `--aura-radius`, `--aura-alpha`, `--aura-background-dim`: visual tuning. Background dim defaults to `0.0`.
-- `--aura-edge-warp` / `--no-aura-edge-warp`: enable or disable edge-only fisheye distortion.
+- `--aura-edge-warp` / `--no-aura-edge-warp`: enable or disable edge-only fisheye distortion. It is disabled by default to keep live latency low.
 - `--aura-edge-warp-strength`: controls how strongly the screen edges bend while the aura is active.
 - `--aura-debug-boxes`: show tracked person boxes over the effect.
 - `--ffmpeg-bin`: ffmpeg executable path.

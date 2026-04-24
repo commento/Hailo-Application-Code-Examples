@@ -301,7 +301,7 @@ class RisingAuraRenderer:
         background_dim: float,
         audio_threshold: float,
         audio_scale: float,
-        edge_warp: bool = True,
+        edge_warp: bool = False,
         edge_warp_strength: float = 0.34,
     ):
         self.aura_radius = aura_radius
