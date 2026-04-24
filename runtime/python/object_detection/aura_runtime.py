@@ -450,17 +450,18 @@ class RisingAuraRenderer:
 
     def _update_plume_layer(self, mist: np.ndarray) -> np.ndarray:
         assert self._plume_layer is not None
-        shifted = np.zeros_like(self._plume_layer)
-        rise_px = 3
-        if rise_px < shifted.shape[0]:
-            shifted[:-rise_px] = self._plume_layer[rise_px:]
+        h, w = self._plume_layer.shape[:2]
+        rise_px = max(4, int(h * 0.018))
+        shifted = self._shift_up(self._plume_layer, rise_px)
+        fast_lift = self._shift_up(self._plume_layer, rise_px * 3)
 
-        drift_left = np.roll(shifted, -1, axis=1)
-        drift_right = np.roll(shifted, 1, axis=1)
-        spread = cv2.addWeighted(shifted, 0.72, drift_left, 0.14, 0.0)
-        spread = cv2.addWeighted(spread, 1.0, drift_right, 0.14, 0.0)
-        spread = cv2.GaussianBlur(spread, (0, 0), sigmaX=4.8, sigmaY=6.8)
-        spread = cv2.convertScaleAbs(spread, alpha=0.88, beta=0)
+        drift_left = self._shift_side(shifted, -1)
+        drift_right = self._shift_side(shifted, 1)
+        spread = cv2.addWeighted(shifted, 0.74, drift_left, 0.13, 0.0)
+        spread = cv2.addWeighted(spread, 1.0, drift_right, 0.13, 0.0)
+        spread = cv2.addWeighted(spread, 0.86, fast_lift, 0.22, 0.0)
+        spread = cv2.GaussianBlur(spread, (0, 0), sigmaX=5.8, sigmaY=9.5)
+        spread = cv2.convertScaleAbs(spread, alpha=0.92, beta=0)
         spread = self._fade_plume_top(spread)
 
         seed = self._plume_seed_from_person(mist)
@@ -474,13 +475,29 @@ class RisingAuraRenderer:
         vertical = np.repeat(vertical, w, axis=1)
         seed = (mist.astype(np.float32) * vertical[..., None]).astype(np.uint8)
         seed = cv2.GaussianBlur(seed, (0, 0), sigmaX=3.0, sigmaY=3.8)
-        return cv2.convertScaleAbs(seed, alpha=0.14, beta=0)
+        return cv2.convertScaleAbs(seed, alpha=0.12, beta=0)
 
     def _fade_plume_top(self, plume: np.ndarray) -> np.ndarray:
         h, w = plume.shape[:2]
-        fade = np.linspace(0.68, 0.96, h, dtype=np.float32)[:, None]
+        fade = np.linspace(0.74, 0.98, h, dtype=np.float32)[:, None]
         fade = np.repeat(fade, w, axis=1)
         return (plume.astype(np.float32) * fade[..., None]).astype(np.uint8)
+
+    def _shift_up(self, image: np.ndarray, pixels: int) -> np.ndarray:
+        shifted = np.zeros_like(image)
+        if pixels < image.shape[0]:
+            shifted[:-pixels] = image[pixels:]
+        return shifted
+
+    def _shift_side(self, image: np.ndarray, pixels: int) -> np.ndarray:
+        shifted = np.zeros_like(image)
+        if pixels < 0:
+            shifted[:, :pixels] = image[:, -pixels:]
+        elif pixels > 0:
+            shifted[:, pixels:] = image[:, :-pixels]
+        else:
+            shifted[:] = image
+        return shifted
 
     def _ensure_plume(self, frame: np.ndarray) -> None:
         if self._plume_layer is None or self._plume_layer.shape != frame.shape:
