@@ -398,26 +398,40 @@ class RisingAuraRenderer:
     ) -> None:
         x, y, w, h = performer.bbox
         cx, _ = performer.center
-        radius = int(self.aura_radius * (0.75 + presence * 0.7 + min(audio.peak, 0.2)))
+        intensity = float(np.clip(0.28 + presence * 0.92 + audio.rms * 2.5, 0.0, 1.0))
+        radius = int(self.aura_radius * (0.75 + intensity * 0.7 + min(audio.peak, 0.2)))
         color = self._aura_tone(presence)
+        bright_color = self._aura_tone(intensity)
 
         if self.person_edges:
             mask, x0, y0 = self._person_edge_mask(frame_rgb, performer)
             if mask is not None:
-                upper = np.zeros_like(mask)
-                cv2.rectangle(upper, (0, 0), (upper.shape[1], max(1, int(upper.shape[0] * 0.58))), 255, -1)
-                mask = cv2.bitwise_and(mask, upper)
                 halo = cv2.dilate(mask, np.ones((7, 7), np.uint8), iterations=1)
                 halo = cv2.GaussianBlur(halo, (0, 0), sigmaX=3.5, sigmaY=3.5)
-                self._apply_mask(mist, halo, x0, y0, color)
+                self._apply_mask(mist, halo, x0, y0, bright_color)
+
+        body_center = (int(cx), int(y + h * 0.52))
+        body_axes = (max(18, int(w * (0.42 + intensity * 0.18))), max(30, int(h * (0.48 + intensity * 0.10))))
+        body_color = tuple(int(channel * (0.34 + intensity * 0.34)) for channel in bright_color)
+        cv2.ellipse(mist, body_center, body_axes, 0, 0, 360, body_color, -1, cv2.LINE_AA)
+
+        torso_center = (int(cx), int(y + h * 0.48))
+        torso_axes = (max(14, int(w * 0.28)), max(24, int(h * 0.34)))
+        torso_color = tuple(int(channel * (0.42 + intensity * 0.38)) for channel in bright_color)
+        cv2.ellipse(mist, torso_center, torso_axes, 0, 0, 360, torso_color, -1, cv2.LINE_AA)
+
+        lower_center = (int(cx), int(y + h * 0.78))
+        lower_axes = (max(12, int(w * 0.24)), max(18, int(h * 0.22)))
+        lower_color = tuple(int(channel * (0.24 + intensity * 0.28)) for channel in bright_color)
+        cv2.ellipse(mist, lower_center, lower_axes, 0, 0, 360, lower_color, -1, cv2.LINE_AA)
 
         shoulder_y = int(y + h * 0.28)
         shoulder_axes = (max(18, int(w * 0.46)), max(12, int(h * (0.10 + presence * 0.05))))
-        cv2.ellipse(mist, (int(cx), shoulder_y), shoulder_axes, 0, 0, 360, color, -1, cv2.LINE_AA)
+        cv2.ellipse(mist, (int(cx), shoulder_y), shoulder_axes, 0, 0, 360, bright_color, -1, cv2.LINE_AA)
 
         head_y = max(0, int(y + h * 0.16))
         head_axes = (max(12, int(radius * 0.16)), max(18, int(radius * 0.22)))
-        cv2.ellipse(mist, (int(cx), head_y), head_axes, 0, 0, 360, color, -1, cv2.LINE_AA)
+        cv2.ellipse(mist, (int(cx), head_y), head_axes, 0, 0, 360, bright_color, -1, cv2.LINE_AA)
 
         crown_y = max(0, int(y + h * 0.08))
         crown_axes = (max(10, int(w * 0.18)), max(10, int(h * (0.05 + presence * 0.03))))
@@ -535,10 +549,12 @@ class RisingAuraRenderer:
         return work_frame, scaled, scale
 
     def _aura_tone(self, presence: float) -> tuple[int, int, int]:
+        presence = float(np.clip(presence, 0.0, 1.0))
+        base = int(176 + presence * 72)
         return (
-            min(235, 135 + int(presence * 45)),
-            min(245, 148 + int(presence * 65)),
-            min(255, 180 + int(presence * 70)),
+            min(255, base),
+            min(255, base + 8),
+            min(255, base + 14),
         )
 
     def _apply_mask(self, image: np.ndarray, mask: np.ndarray, x0: int, y0: int, color: tuple[int, int, int]) -> None:
