@@ -151,6 +151,12 @@ def parse_args() -> argparse.Namespace:
         help="RMS range above the threshold used for soft aura onset. Higher values fade in more gradually."
     )
     parser.add_argument(
+        "--aura-fade-in-frames",
+        type=int,
+        default=24,
+        help="Fixed fade-in animation length after audio appears. Higher values make the aura onset slower."
+    )
+    parser.add_argument(
         "--aura-radius",
         type=int,
         default=120,
@@ -302,6 +308,7 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
           enable_tracking=False, show_fps=False, framerate=None, draw_trail=False,
           aura=False, aura_audio_device=None, aura_audio_threshold=0.004,
           aura_audio_scale=20.0, aura_audio_knee=0.025,
+          aura_fade_in_frames=24,
           aura_radius=120, aura_alpha=0.58,
           aura_render_scale=0.5, aura_person_edges=False, aura_background_dim=0.0,
           aura_edge_warp=False, aura_edge_warp_strength=0.85,
@@ -344,6 +351,7 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
             audio_threshold=aura_audio_threshold,
             audio_scale=aura_audio_scale,
             audio_knee=aura_audio_knee,
+            fade_in_frames=aura_fade_in_frames,
             render_scale=aura_render_scale,
             person_edges=aura_person_edges,
             edge_warp=aura_edge_warp,
@@ -656,6 +664,7 @@ def main() -> None:
           args.output_resolution, args.track, args.show_fps, args.framerate, args.draw_trail,
           args.aura, args.aura_audio_device, args.aura_audio_threshold,
           args.aura_audio_scale, args.aura_audio_knee,
+          args.aura_fade_in_frames,
           args.aura_radius, args.aura_alpha,
           args.aura_render_scale, args.aura_person_edges,
           args.aura_background_dim, args.aura_edge_warp,

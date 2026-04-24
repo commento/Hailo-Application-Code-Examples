@@ -139,6 +139,7 @@ Useful aura options:
 - `--aura-audio-threshold`: lower values make the aura react to quieter audio.
 - `--aura-audio-scale`: higher values make the aura more intense.
 - `--aura-audio-knee`: widens the soft RMS onset above the threshold. Higher values fade in more gradually.
+- `--aura-fade-in-frames`: fixed fade-in length once audio appears. Higher values make the aura enter more slowly.
 - `--aura-radius`, `--aura-alpha`, `--aura-background-dim`: visual tuning. Background dim defaults to `0.0`.
 - `--aura-render-scale`: internal aura render size. `0.5` is the default low-latency mode; `0.35` is lighter; `1.0` is full quality.
 - `--aura-person-edges` / `--no-aura-person-edges`: enable or disable person edge detection inside the aura. It is disabled by default to keep live latency low.

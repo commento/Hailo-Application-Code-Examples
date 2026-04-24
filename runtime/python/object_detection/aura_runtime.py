@@ -302,6 +302,7 @@ class RisingAuraRenderer:
         audio_threshold: float,
         audio_scale: float,
         audio_knee: float = 0.025,
+        fade_in_frames: int = 24,
         render_scale: float = 0.5,
         person_edges: bool = False,
         edge_warp: bool = False,
@@ -314,6 +315,7 @@ class RisingAuraRenderer:
         self.audio_threshold = audio_threshold
         self.audio_scale = audio_scale
         self.audio_knee = audio_knee
+        self.fade_in_frames = max(1, int(fade_in_frames))
         self.render_scale = render_scale
         self.person_edges = person_edges
         self.edge_warp = edge_warp
@@ -323,6 +325,7 @@ class RisingAuraRenderer:
         self.age_states: dict[int, int] = {}
         self._plume_layer: np.ndarray | None = None
         self._smoothed_audio_gate = 0.0
+        self._fade_in_progress = 0.0
         self._scene_energy = 0.0
 
     def render(self, frame_rgb: np.ndarray, performers: list[TrackedPerformer], audio: AudioFeatures) -> np.ndarray:
@@ -380,6 +383,12 @@ class RisingAuraRenderer:
         scaled_rms = min(1.0, rms_over_threshold * self.audio_scale)
         peak_energy = max(0.0, (audio.peak - self.audio_threshold * 1.4) * (self.audio_scale * 0.08))
         target = min(1.0, (rms_energy * 0.72 + scaled_rms * 0.22 + peak_energy * 0.06))
+        if target > 0.01:
+            self._fade_in_progress = min(1.0, self._fade_in_progress + 1.0 / self.fade_in_frames)
+        else:
+            self._fade_in_progress = max(0.0, self._fade_in_progress - 0.08)
+        onset = 0.12 + 0.88 * self._smoothstep(self._fade_in_progress)
+        target *= onset
         self._smoothed_audio_gate = self._ease(
             self._smoothed_audio_gate,
             target,
