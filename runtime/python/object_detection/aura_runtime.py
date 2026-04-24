@@ -305,7 +305,7 @@ class RisingAuraRenderer:
         render_scale: float = 0.5,
         person_edges: bool = False,
         edge_warp: bool = False,
-        edge_warp_strength: float = 0.34,
+        edge_warp_strength: float = 0.85,
         edge_warp_scale: float = 0.5,
     ):
         self.aura_radius = aura_radius
@@ -554,7 +554,7 @@ class RisingAuraRenderer:
         return cv2.resize(blurred, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
 
     def _apply_edge_fisheye(self, frame: np.ndarray, strength: float) -> np.ndarray:
-        strength = float(np.clip(strength, 0.0, 1.0))
+        strength = float(np.clip(strength, 0.0, 2.0))
         if strength <= 0.002:
             return frame
 
@@ -581,12 +581,17 @@ class RisingAuraRenderer:
         norm_y = (yy - cy) / max(work_h * 0.5, 1.0)
         radius = np.sqrt(norm_x * norm_x + norm_y * norm_y)
 
-        edge = np.clip((radius - 0.58) / 0.42, 0.0, 1.0)
+        edge = np.clip((radius - 0.42) / 0.58, 0.0, 1.0)
         edge = edge * edge * (3.0 - 2.0 * edge)
-        stretch = 1.0 + edge * strength * 0.34
+        twist = edge * edge * strength * 0.18
+        cos_t = np.cos(twist)
+        sin_t = np.sin(twist)
+        warped_x = norm_x * cos_t - norm_y * sin_t
+        warped_y = norm_x * sin_t + norm_y * cos_t
+        stretch = 1.0 + np.power(edge, 1.35) * strength * 0.78
 
-        map_x_small = cx + norm_x * stretch * (work_w * 0.5)
-        map_y_small = cy + norm_y * stretch * (work_h * 0.5)
+        map_x_small = cx + warped_x * stretch * (work_w * 0.5)
+        map_y_small = cy + warped_y * stretch * (work_h * 0.5)
         map_x = cv2.resize(map_x_small, (work_w, work_h), interpolation=cv2.INTER_CUBIC)
         map_y = cv2.resize(map_y_small, (work_w, work_h), interpolation=cv2.INTER_CUBIC)
         map_x = np.clip(map_x, 0, work_w - 1).astype(np.float32)

@@ -143,7 +143,7 @@ Useful aura options:
 - `--aura-render-scale`: internal aura render size. `0.5` is the default low-latency mode; `0.35` is lighter; `1.0` is full quality.
 - `--aura-person-edges` / `--no-aura-person-edges`: enable or disable person edge detection inside the aura. It is disabled by default to keep live latency low.
 - `--aura-edge-warp` / `--no-aura-edge-warp`: enable or disable edge-only fisheye distortion. It is disabled by default to keep live latency low.
-- `--aura-edge-warp-strength`: controls how strongly the screen edges bend while the aura is active.
+- `--aura-edge-warp-strength`: controls how strongly the screen edges bend while the aura is active. Around `0.85` gives a portal-like edge bend while keeping the center stable.
 - `--aura-edge-warp-scale`: internal resolution used by the fisheye. `0.5` is faster; `0.35` is lighter; `1.0` is full quality.
 - `--aura-debug-boxes`: show tracked person boxes over the effect.
 - `--ffmpeg-bin`: ffmpeg executable path.
