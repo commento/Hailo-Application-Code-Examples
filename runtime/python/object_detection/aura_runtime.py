@@ -301,6 +301,7 @@ class RisingAuraRenderer:
         background_dim: float,
         audio_threshold: float,
         audio_scale: float,
+        audio_knee: float = 0.025,
         render_scale: float = 0.5,
         person_edges: bool = False,
         edge_warp: bool = False,
@@ -312,6 +313,7 @@ class RisingAuraRenderer:
         self.background_dim = background_dim
         self.audio_threshold = audio_threshold
         self.audio_scale = audio_scale
+        self.audio_knee = audio_knee
         self.render_scale = render_scale
         self.person_edges = person_edges
         self.edge_warp = edge_warp
@@ -371,14 +373,18 @@ class RisingAuraRenderer:
         return cv2.addWeighted(base, 1.0, mist, self.aura_alpha, 0.0)
 
     def _audio_gate(self, audio: AudioFeatures) -> float:
-        rms_energy = max(0.0, (audio.rms - self.audio_threshold) * self.audio_scale)
-        peak_energy = max(0.0, (audio.peak - self.audio_threshold * 1.1) * (self.audio_scale * 0.12))
-        target = min(1.0, rms_energy * 0.94 + peak_energy * 0.06)
+        knee = max(self.audio_knee, 1e-5)
+        rms_over_threshold = max(0.0, audio.rms - self.audio_threshold)
+        rms_normalized = min(1.0, rms_over_threshold / knee)
+        rms_energy = self._smoothstep(rms_normalized)
+        scaled_rms = min(1.0, rms_over_threshold * self.audio_scale)
+        peak_energy = max(0.0, (audio.peak - self.audio_threshold * 1.4) * (self.audio_scale * 0.08))
+        target = min(1.0, (rms_energy * 0.72 + scaled_rms * 0.22 + peak_energy * 0.06))
         self._smoothed_audio_gate = self._ease(
             self._smoothed_audio_gate,
             target,
-            attack=0.035,
-            release=0.028,
+            attack=0.018,
+            release=0.032,
         )
         return self._smoothed_audio_gate
 
@@ -572,6 +578,10 @@ class RisingAuraRenderer:
         if target > current:
             return current + (target - current) * attack
         return current + (target - current) * release
+
+    def _smoothstep(self, value: float) -> float:
+        value = float(np.clip(value, 0.0, 1.0))
+        return value * value * (3.0 - 2.0 * value)
 
 
 class AuraPostProcessor:

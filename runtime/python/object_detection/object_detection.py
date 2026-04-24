@@ -145,6 +145,12 @@ def parse_args() -> argparse.Namespace:
         help="Multiplier used to convert audio level into aura intensity."
     )
     parser.add_argument(
+        "--aura-audio-knee",
+        type=float,
+        default=0.025,
+        help="RMS range above the threshold used for soft aura onset. Higher values fade in more gradually."
+    )
+    parser.add_argument(
         "--aura-radius",
         type=int,
         default=120,
@@ -295,7 +301,8 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
           save_stream_output=False, camera_resolution=None, output_resolution=None,
           enable_tracking=False, show_fps=False, framerate=None, draw_trail=False,
           aura=False, aura_audio_device=None, aura_audio_threshold=0.004,
-          aura_audio_scale=20.0, aura_radius=120, aura_alpha=0.58,
+          aura_audio_scale=20.0, aura_audio_knee=0.025,
+          aura_radius=120, aura_alpha=0.58,
           aura_render_scale=0.5, aura_person_edges=False, aura_background_dim=0.0,
           aura_edge_warp=False, aura_edge_warp_strength=0.34,
           aura_edge_warp_scale=0.5, aura_debug_boxes=False,
@@ -336,6 +343,7 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
             background_dim=aura_background_dim,
             audio_threshold=aura_audio_threshold,
             audio_scale=aura_audio_scale,
+            audio_knee=aura_audio_knee,
             render_scale=aura_render_scale,
             person_edges=aura_person_edges,
             edge_warp=aura_edge_warp,
@@ -647,7 +655,8 @@ def main() -> None:
           args.output_dir, args.save_stream_output, args.camera_resolution,
           args.output_resolution, args.track, args.show_fps, args.framerate, args.draw_trail,
           args.aura, args.aura_audio_device, args.aura_audio_threshold,
-          args.aura_audio_scale, args.aura_radius, args.aura_alpha,
+          args.aura_audio_scale, args.aura_audio_knee,
+          args.aura_radius, args.aura_alpha,
           args.aura_render_scale, args.aura_person_edges,
           args.aura_background_dim, args.aura_edge_warp,
           args.aura_edge_warp_strength, args.aura_edge_warp_scale,
