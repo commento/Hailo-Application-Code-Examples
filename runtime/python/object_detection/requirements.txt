@@ -4,3 +4,4 @@ numpy<2.0
 scipy
 lap
 cython_bbox
+sounddevice

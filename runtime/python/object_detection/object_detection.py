@@ -27,6 +27,12 @@ from common.toolbox import (
     list_networks,
     list_inputs
 )
+from aura_runtime import (
+    AudioAnalyzer,
+    AuraPostProcessor,
+    RisingAuraRenderer,
+    visualize_with_aura_recording,
+)
 
 APP_NAME = Path(__file__).stem
 
@@ -105,6 +111,81 @@ def parse_args() -> argparse.Namespace:
             "Uses the last 30 positions from the tracker history."
         )
     )
+    parser.add_argument(
+        "--aura",
+        action="store_true",
+        help="Draw an upward-moving aura around detected people, gated by live audio input."
+    )
+    parser.add_argument(
+        "--aura-audio-device",
+        type=str,
+        default=None,
+        help="Audio input device for the aura gate. Use a sounddevice device id/name; default uses system input."
+    )
+    parser.add_argument(
+        "--aura-audio-threshold",
+        type=float,
+        default=0.004,
+        help="Minimum input audio RMS before the aura appears."
+    )
+    parser.add_argument(
+        "--aura-audio-scale",
+        type=float,
+        default=20.0,
+        help="Multiplier used to convert audio level into aura intensity."
+    )
+    parser.add_argument(
+        "--aura-radius",
+        type=int,
+        default=120,
+        help="Base radius of the aura around each detected person."
+    )
+    parser.add_argument(
+        "--aura-alpha",
+        type=float,
+        default=0.58,
+        help="Aura overlay opacity."
+    )
+    parser.add_argument(
+        "--aura-background-dim",
+        type=float,
+        default=0.45,
+        help="Background dim amount while the aura is active."
+    )
+    parser.add_argument(
+        "--aura-debug-boxes",
+        action="store_true",
+        help="Draw person tracking boxes on top of the aura output."
+    )
+    parser.add_argument(
+        "--record-performance",
+        action="store_true",
+        help="Record the aura performance to an MP4 with microphone audio using ffmpeg."
+    )
+    parser.add_argument(
+        "--recording-output",
+        type=str,
+        default=None,
+        help="ffmpeg output path pattern, e.g. output/aura_%Y%m%d_%H%M%S.mp4."
+    )
+    parser.add_argument(
+        "--ffmpeg-bin",
+        type=str,
+        default="ffmpeg",
+        help="ffmpeg executable path."
+    )
+    parser.add_argument(
+        "--audio-sample-rate",
+        type=int,
+        default=48000,
+        help="Audio sample rate used for aura analysis and recording."
+    )
+    parser.add_argument(
+        "--audio-block-size",
+        type=int,
+        default=512,
+        help="Audio callback block size used for aura analysis and recording."
+    )
     display_group = parser.add_mutually_exclusive_group(required=False)
     display_group.add_argument(
         "-cr","--camera-resolution",
@@ -170,7 +251,12 @@ def parse_args() -> argparse.Namespace:
 
 def run_inference_pipeline(net, input, batch_size, labels, output_dir,
           save_stream_output=False, camera_resolution=None, output_resolution=None,
-          enable_tracking=False, show_fps=False, framerate=None, draw_trail=False) -> None:
+          enable_tracking=False, show_fps=False, framerate=None, draw_trail=False,
+          aura=False, aura_audio_device=None, aura_audio_threshold=0.004,
+          aura_audio_scale=20.0, aura_radius=120, aura_alpha=0.58,
+          aura_background_dim=0.45, aura_debug_boxes=False,
+          record_performance=False, recording_output=None, ffmpeg_bin="ffmpeg",
+          audio_sample_rate=48000, audio_block_size=512) -> None:
     """
     Initialize queues, HailoAsyncInference instance, and run the inference.
     """
@@ -184,7 +270,7 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
     if show_fps:
         fps_tracker = FrameRateTracker()
 
-    if enable_tracking:
+    if enable_tracking or aura:
         # load tracker config from config_data
         tracker_config = config_data.get("visualization_params", {}).get("tracker", {})
         tracker = BYTETracker(SimpleNamespace(**tracker_config))
@@ -192,10 +278,30 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
     input_queue = queue.Queue()
     output_queue = queue.Queue()
 
-    post_process_callback_fn = partial(
-        inference_result_handler, labels=labels,
-        config_data=config_data, tracker=tracker, draw_trail=draw_trail
-    )
+    audio_analyzer = None
+    if aura:
+        audio_device = _parse_audio_device(aura_audio_device)
+        audio_analyzer = AudioAnalyzer(audio_sample_rate, audio_block_size, audio_device)
+        aura_renderer = RisingAuraRenderer(
+            aura_radius=aura_radius,
+            aura_alpha=aura_alpha,
+            background_dim=aura_background_dim,
+            audio_threshold=aura_audio_threshold,
+            audio_scale=aura_audio_scale,
+        )
+        post_process_callback_fn = AuraPostProcessor(
+            labels=labels,
+            config_data=config_data,
+            tracker=tracker,
+            audio=audio_analyzer,
+            renderer=aura_renderer,
+            draw_boxes=aura_debug_boxes,
+        )
+    else:
+        post_process_callback_fn = partial(
+            inference_result_handler, labels=labels,
+            config_data=config_data, tracker=tracker, draw_trail=draw_trail
+        )
 
     hailo_inference = HailoInfer(net, batch_size)
     height, width, _ = hailo_inference.get_input_shape()
@@ -203,14 +309,36 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
     preprocess_thread = threading.Thread(
         target=preprocess, args=(images, cap, framerate, batch_size, input_queue, width, height)
     )
-    postprocess_thread = threading.Thread(
-        target=visualize, args=(output_queue, cap, save_stream_output,
-                                output_dir, post_process_callback_fn,
-                                fps_tracker, output_resolution)
-    )
+    if aura:
+        postprocess_thread = threading.Thread(
+            target=visualize_with_aura_recording,
+            kwargs={
+                "output_queue": output_queue,
+                "cap": cap,
+                "save_stream_output": save_stream_output,
+                "output_dir": output_dir,
+                "callback": post_process_callback_fn,
+                "audio": audio_analyzer,
+                "fps_tracker": fps_tracker,
+                "output_resolution": output_resolution,
+                "framerate": framerate,
+                "record_audio_video": record_performance or save_stream_output,
+                "ffmpeg_bin": ffmpeg_bin,
+                "recording_output": recording_output,
+            }
+        )
+    else:
+        postprocess_thread = threading.Thread(
+            target=visualize, args=(output_queue, cap, save_stream_output,
+                                    output_dir, post_process_callback_fn,
+                                    fps_tracker, output_resolution)
+        )
     infer_thread = threading.Thread(
         target=infer, args=(hailo_inference, input_queue, output_queue)
     )
+
+    if audio_analyzer is not None:
+        audio_analyzer.start()
 
     preprocess_thread.start()
     postprocess_thread.start()
@@ -224,12 +352,24 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
     output_queue.put(None)  # Signal process thread to exit
     postprocess_thread.join()
 
+    if audio_analyzer is not None:
+        audio_analyzer.stop()
+
     if show_fps:
         logger.debug(fps_tracker.frame_rate_summary())
 
     logger.success("Inference was successful!")
-    if save_stream_output or input.lower() != "camera":
+    if save_stream_output or record_performance or input.lower() != "camera":
         logger.success(f'Results have been saved in {output_dir}')
+
+
+def _parse_audio_device(device):
+    if device is None:
+        return None
+    try:
+        return int(device)
+    except ValueError:
+        return device
 
 
 def infer(hailo_inference, input_queue, output_queue):
@@ -310,7 +450,12 @@ def main() -> None:
 
     run_inference_pipeline(args.net, args.input, args.batch_size, args.labels,
           args.output_dir, args.save_stream_output, args.camera_resolution,
-          args.output_resolution, args.track, args.show_fps, args.framerate, args.draw_trail)
+          args.output_resolution, args.track, args.show_fps, args.framerate, args.draw_trail,
+          args.aura, args.aura_audio_device, args.aura_audio_threshold,
+          args.aura_audio_scale, args.aura_radius, args.aura_alpha,
+          args.aura_background_dim, args.aura_debug_boxes,
+          args.record_performance, args.recording_output, args.ffmpeg_bin,
+          args.audio_sample_rate, args.audio_block_size)
 
 
 

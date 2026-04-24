@@ -17,6 +17,8 @@ Requirements
 - scipy
 - lap
 - cython_bbox
+- sounddevice
+- ffmpeg executable available on `PATH` when using `--record-performance`
 
 Supported Models
 ----------------
@@ -119,6 +121,26 @@ Example
 ```shell script
 ./object_detection.py -n ./yolov8n.hef -i camera --track --draw-trail
 ```
+
+**Aura performance with microphone-reactive effect and ffmpeg recording**
+```shell script
+./object_detection.py -n ./yolov8n.hef -i camera --aura --record-performance \
+  --recording-output "output/aura_%Y%m%d_%H%M%S.mp4"
+```
+
+The aura is drawn only around detected people and appears only when live audio
+input passes `--aura-audio-threshold`. The glow seed rises upward frame by frame,
+creating a moving plume above the person. `--record-performance` writes the
+processed video with ffmpeg, records microphone audio to a temporary WAV, and
+muxes both into the final MP4.
+
+Useful aura options:
+- `--aura-audio-device`: microphone device id/name. If omitted, the system default input is used.
+- `--aura-audio-threshold`: lower values make the aura react to quieter audio.
+- `--aura-audio-scale`: higher values make the aura more intense.
+- `--aura-radius`, `--aura-alpha`, `--aura-background-dim`: visual tuning.
+- `--aura-debug-boxes`: show tracked person boxes over the effect.
+- `--ffmpeg-bin`: ffmpeg executable path.
 
 **Inference on a camera stream with custom frame rate**
 ```shell script
