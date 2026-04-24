@@ -346,7 +346,7 @@ class RisingAuraRenderer:
             self.aura_states[performer.track_id] = presence
             if presence <= 0.02:
                 continue
-            self._draw_person_aura(mist, frame_rgb, performer, presence, audio)
+            self._draw_person_aura(mist, work_frame, performer, presence, audio)
 
         for track_id in list(self.aura_states.keys()):
             if track_id not in active_ids:
@@ -419,19 +419,10 @@ class RisingAuraRenderer:
         head_axes = (max(12, int(radius * 0.16)), max(18, int(radius * 0.22)))
         cv2.ellipse(mist, (int(cx), head_y), head_axes, 0, 0, 360, color, -1, cv2.LINE_AA)
 
-        beam_top = max(0, int(y - radius * (1.2 + presence * 0.8)))
-        beam_bottom = max(0, int(y + h * 0.22))
-        beam_width = max(12, int(w * (0.12 + presence * 0.10)))
-        points = np.array(
-            [
-                [int(cx - beam_width * 0.3), beam_top],
-                [int(cx + beam_width * 0.3), beam_top],
-                [int(cx + beam_width), beam_bottom],
-                [int(cx - beam_width), beam_bottom],
-            ],
-            dtype=np.int32,
-        )
-        cv2.fillConvexPoly(mist, points, tuple(int(channel * 0.62) for channel in color), cv2.LINE_AA)
+        crown_y = max(0, int(y + h * 0.08))
+        crown_axes = (max(10, int(w * 0.18)), max(10, int(h * (0.05 + presence * 0.03))))
+        crown_color = tuple(int(channel * 0.56) for channel in color)
+        cv2.ellipse(mist, (int(cx), crown_y), crown_axes, 0, 0, 360, crown_color, -1, cv2.LINE_AA)
 
     def _person_edge_mask(
         self,
@@ -460,22 +451,36 @@ class RisingAuraRenderer:
     def _update_plume_layer(self, mist: np.ndarray) -> np.ndarray:
         assert self._plume_layer is not None
         shifted = np.zeros_like(self._plume_layer)
-        rise_px = 8
+        rise_px = 3
         if rise_px < shifted.shape[0]:
             shifted[:-rise_px] = self._plume_layer[rise_px:]
 
-        spread = cv2.GaussianBlur(shifted, (0, 0), sigmaX=5.5, sigmaY=7.0)
-        spread = cv2.convertScaleAbs(spread, alpha=0.82, beta=0)
+        drift_left = np.roll(shifted, -1, axis=1)
+        drift_right = np.roll(shifted, 1, axis=1)
+        spread = cv2.addWeighted(shifted, 0.72, drift_left, 0.14, 0.0)
+        spread = cv2.addWeighted(spread, 1.0, drift_right, 0.14, 0.0)
+        spread = cv2.GaussianBlur(spread, (0, 0), sigmaX=4.8, sigmaY=6.8)
+        spread = cv2.convertScaleAbs(spread, alpha=0.88, beta=0)
+        spread = self._fade_plume_top(spread)
 
-        h, w = mist.shape[:2]
-        upper_mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.rectangle(upper_mask, (0, 0), (w, max(1, int(h * 0.48))), 255, -1)
-        seed = cv2.bitwise_and(mist, mist, mask=upper_mask)
-        seed = cv2.GaussianBlur(seed, (0, 0), sigmaX=4.0, sigmaY=4.0)
-        seed = cv2.convertScaleAbs(seed, alpha=0.26, beta=0)
+        seed = self._plume_seed_from_person(mist)
         cv2.add(spread, seed, dst=spread)
         self._plume_layer = spread
         return spread
+
+    def _plume_seed_from_person(self, mist: np.ndarray) -> np.ndarray:
+        h, w = mist.shape[:2]
+        vertical = np.linspace(0.25, 1.0, h, dtype=np.float32)[:, None]
+        vertical = np.repeat(vertical, w, axis=1)
+        seed = (mist.astype(np.float32) * vertical[..., None]).astype(np.uint8)
+        seed = cv2.GaussianBlur(seed, (0, 0), sigmaX=3.0, sigmaY=3.8)
+        return cv2.convertScaleAbs(seed, alpha=0.14, beta=0)
+
+    def _fade_plume_top(self, plume: np.ndarray) -> np.ndarray:
+        h, w = plume.shape[:2]
+        fade = np.linspace(0.68, 0.96, h, dtype=np.float32)[:, None]
+        fade = np.repeat(fade, w, axis=1)
+        return (plume.astype(np.float32) * fade[..., None]).astype(np.uint8)
 
     def _ensure_plume(self, frame: np.ndarray) -> None:
         if self._plume_layer is None or self._plume_layer.shape != frame.shape:
