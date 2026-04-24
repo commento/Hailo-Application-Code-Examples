@@ -670,6 +670,7 @@ def visualize_with_aura_recording(
     pixel_format: str = "yuv420p",
     crf: int = 20,
     preset: str = "veryfast",
+    stop_event=None,
 ) -> None:
     image_id = 0
     recorder = None
@@ -678,15 +679,17 @@ def visualize_with_aura_recording(
     frame_height = None
 
     try:
-        if cap is not None:
-            cv2.namedWindow("Output", cv2.WINDOW_NORMAL)
-            if hasattr(cv2, "WND_PROP_ASPECT_RATIO") and hasattr(cv2, "WINDOW_FREERATIO"):
-                cv2.setWindowProperty("Output", cv2.WND_PROP_ASPECT_RATIO, cv2.WINDOW_FREERATIO)
-            cv2.setWindowProperty("Output", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        show_window = cap is not None
+        if show_window:
             try:
+                cv2.namedWindow("Output", cv2.WINDOW_NORMAL)
+                if hasattr(cv2, "WND_PROP_ASPECT_RATIO") and hasattr(cv2, "WINDOW_FREERATIO"):
+                    cv2.setWindowProperty("Output", cv2.WND_PROP_ASPECT_RATIO, cv2.WINDOW_FREERATIO)
+                cv2.setWindowProperty("Output", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
                 cv2.moveWindow("Output", 0, 0)
             except cv2.error:
-                pass
+                logger.warning("Could not create the OpenCV preview window. Continuing without live preview.")
+                show_window = False
 
             base_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
             base_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
@@ -715,8 +718,11 @@ def visualize_with_aura_recording(
                 audio_path = str(recorder.output_file.with_suffix(".wav"))
                 audio.start_recording(audio_path)
 
-        while True:
-            result = output_queue.get()
+        while stop_event is None or not stop_event.is_set():
+            try:
+                result = output_queue.get(timeout=0.1)
+            except Empty:
+                continue
             while True:
                 try:
                     newer_result = output_queue.get_nowait()
@@ -745,7 +751,12 @@ def visualize_with_aura_recording(
             frame_to_show = _resize_frame_for_output(bgr_frame, output_resolution)
 
             if cap is not None:
-                cv2.imshow("Output", _prepare_fullscreen_frame(frame_to_show, display_size))
+                if show_window:
+                    try:
+                        cv2.imshow("Output", _prepare_fullscreen_frame(frame_to_show, display_size))
+                    except cv2.error:
+                        logger.warning("OpenCV preview failed. Disabling live preview.")
+                        show_window = False
                 if recorder is not None and frame_width and frame_height:
                     recorder.write(cv2.resize(frame_to_show, (frame_width, frame_height)))
             else:
@@ -753,12 +764,19 @@ def visualize_with_aura_recording(
 
             image_id += 1
             output_queue.task_done()
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                if cap is not None:
-                    cap.release()
-                cv2.destroyAllWindows()
-                break
+            if show_window:
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("q"), 27):
+                    if stop_event is not None:
+                        stop_event.set()
+                    break
     finally:
+        if cap is not None:
+            cap.release()
+        try:
+            cv2.destroyAllWindows()
+        except cv2.error:
+            pass
         if recorder is not None:
             recorder.close()
             audio.stop()

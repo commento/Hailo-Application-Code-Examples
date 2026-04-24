@@ -153,6 +153,15 @@ display size cannot be detected automatically, set it explicitly:
 AURA_DISPLAY_SIZE=1920x1080 ./object_detection.py -n ./yolov8n.hef -i camera --aura
 ```
 
+When launching from SSH or a service toward the primary X display, either set
+`DISPLAY` or pass `--display`:
+```shell script
+DISPLAY=:0 ./object_detection.py -n ./yolov8n.hef -i camera --aura
+./object_detection.py -n ./yolov8n.hef -i camera --aura --display :0
+```
+Press `Ctrl-C`, `q`, or `Esc` to stop the live preview and close the camera,
+audio stream, Hailo inference, and ffmpeg recorder cleanly.
+
 **Inference on a camera stream with custom frame rate**
 ```shell script
 ./object_detection.py -n ./yolov8n.hef -i camera -f 20

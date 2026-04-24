@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import signal
 import sys
 from loguru import logger
 import queue
 import threading
+import time
 from functools import partial
 from types import SimpleNamespace
 import numpy as np
@@ -26,7 +28,8 @@ from common.toolbox import (
     resolve_input_arg,
     resolve_output_resolution_arg,
     list_networks,
-    list_inputs
+    list_inputs,
+    default_preprocess
 )
 from aura_runtime import (
     AudioAnalyzer,
@@ -103,6 +106,12 @@ def parse_args() -> argparse.Namespace:
             "[Camera only] Override the camera input framerate.\n"
             "Example: -f 10.0"
         )
+    )
+    parser.add_argument(
+        "--display",
+        type=str,
+        default=None,
+        help="X11 display to use for OpenCV preview, e.g. ':0'. Equivalent to DISPLAY=:0."
     )
     parser.add_argument(
         "--draw-trail",
@@ -268,6 +277,8 @@ def parse_args() -> argparse.Namespace:
     args.net = resolve_net_arg(APP_NAME, args.net, ".")
     args.input = resolve_input_arg(APP_NAME, args.input)
     args.output_resolution = resolve_output_resolution_arg(args.output_resolution)
+    if args.display:
+        os.environ["DISPLAY"] = args.display
 
     if not os.path.exists(args.labels):
         raise FileNotFoundError(f"Labels file not found: {args.labels}")
@@ -312,6 +323,8 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
 
     input_queue = queue.Queue(maxsize=2 if aura else 0)
     output_queue = queue.Queue(maxsize=2 if aura else 0)
+    stop_event = threading.Event()
+    previous_handlers = _install_stop_handlers(stop_event, input_queue, output_queue)
 
     audio_analyzer = None
     if aura:
@@ -347,7 +360,9 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
     height, width, _ = hailo_inference.get_input_shape()
 
     preprocess_thread = threading.Thread(
-        target=preprocess, args=(images, cap, framerate, batch_size, input_queue, width, height)
+        target=_preprocess_with_stop if aura else preprocess,
+        args=(images, cap, framerate, batch_size, input_queue, width, height, stop_event) if aura else
+             (images, cap, framerate, batch_size, input_queue, width, height)
     )
     if aura:
         postprocess_thread = threading.Thread(
@@ -365,6 +380,7 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
                 "record_audio_video": record_performance or save_stream_output,
                 "ffmpeg_bin": ffmpeg_bin,
                 "recording_output": recording_output,
+                "stop_event": stop_event,
             }
         )
     else:
@@ -374,31 +390,67 @@ def run_inference_pipeline(net, input, batch_size, labels, output_dir,
                                     fps_tracker, output_resolution)
         )
     infer_thread = threading.Thread(
-        target=infer, args=(hailo_inference, input_queue, output_queue)
+        target=infer, args=(hailo_inference, input_queue, output_queue, stop_event)
     )
 
     if audio_analyzer is not None:
         audio_analyzer.start()
 
-    preprocess_thread.start()
-    postprocess_thread.start()
-    infer_thread.start()
+    completed_normally = False
+    try:
+        preprocess_thread.start()
+        postprocess_thread.start()
+        infer_thread.start()
 
-    if show_fps:
-        fps_tracker.start()
+        if show_fps:
+            fps_tracker.start()
 
-    preprocess_thread.join()
-    infer_thread.join()
-    output_queue.put(None)  # Signal process thread to exit
-    postprocess_thread.join()
+        while postprocess_thread.is_alive():
+            if stop_event.is_set():
+                break
+            if not preprocess_thread.is_alive() and not infer_thread.is_alive():
+                _safe_put(output_queue, None)
+                postprocess_thread.join(timeout=0.2)
+                if not postprocess_thread.is_alive():
+                    completed_normally = True
+                    break
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        logger.info("Interrupted by Ctrl-C. Stopping...")
+        stop_event.set()
+    finally:
+        if not completed_normally:
+            stop_event.set()
+            _safe_put(input_queue, None)
+            _safe_put(output_queue, None)
 
-    if audio_analyzer is not None:
-        audio_analyzer.stop()
+        preprocess_thread.join(timeout=2)
+        infer_thread.join(timeout=3)
+        _safe_put(output_queue, None)
+        postprocess_thread.join(timeout=5)
 
-    if show_fps:
+        if cap is not None:
+            cap.release()
+        if audio_analyzer is not None:
+            audio_analyzer.stop()
+        if "hailo_inference" in locals():
+            try:
+                hailo_inference.close()
+            except Exception:
+                pass
+        try:
+            cv2.destroyAllWindows()
+        except cv2.error:
+            pass
+        _restore_stop_handlers(previous_handlers)
+
+    if show_fps and fps_tracker is not None:
         logger.debug(fps_tracker.frame_rate_summary())
 
-    logger.success("Inference was successful!")
+    if not completed_normally and stop_event.is_set():
+        logger.info("Inference stopped.")
+    else:
+        logger.success("Inference was successful!")
     if save_stream_output or record_performance or input.lower() != "camera":
         logger.success(f'Results have been saved in {output_dir}')
 
@@ -412,7 +464,96 @@ def _parse_audio_device(device):
         return device
 
 
-def infer(hailo_inference, input_queue, output_queue):
+def _install_stop_handlers(stop_event, *queues):
+    previous_handlers = {}
+
+    def _handle_stop(signum, frame):
+        logger.info("Stop requested. Closing camera, inference, preview, and recorders...")
+        stop_event.set()
+        for queue_obj in queues:
+            _safe_put(queue_obj, None)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        previous_handlers[sig] = signal.getsignal(sig)
+        try:
+            signal.signal(sig, _handle_stop)
+        except ValueError:
+            pass
+    return previous_handlers
+
+
+def _restore_stop_handlers(previous_handlers):
+    for sig, handler in previous_handlers.items():
+        try:
+            signal.signal(sig, handler)
+        except ValueError:
+            pass
+
+
+def _safe_put(queue_obj, item) -> bool:
+    try:
+        queue_obj.put_nowait(item)
+        return True
+    except queue.Full:
+        try:
+            queue_obj.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            queue_obj.put_nowait(item)
+            return True
+        except queue.Full:
+            return False
+
+
+def _put_latest(queue_obj, item, stop_event) -> bool:
+    while not stop_event.is_set():
+        try:
+            queue_obj.put(item, timeout=0.05)
+            return True
+        except queue.Full:
+            try:
+                queue_obj.get_nowait()
+            except queue.Empty:
+                pass
+    return False
+
+
+def _preprocess_with_stop(images, cap, framerate, batch_size, input_queue, width, height, stop_event):
+    if cap is None:
+        preprocess(images, cap, framerate, batch_size, input_queue, width, height)
+        return
+
+    frames = []
+    processed_frames = []
+    cam_fps = cap.get(cv2.CAP_PROP_FPS)
+    if not cam_fps or cam_fps <= 0:
+        cam_fps = 30.0
+    skip = max(1, int(round(cam_fps / float(framerate)))) if framerate and framerate > 0 else 1
+    frame_idx = 0
+
+    try:
+        while not stop_event.is_set():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            frame_idx += 1
+            if frame_idx % skip != 0:
+                continue
+
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frames.append(frame)
+            processed_frames.append(default_preprocess(frame, width, height))
+
+            if len(frames) == batch_size:
+                if not _put_latest(input_queue, (frames, processed_frames), stop_event):
+                    break
+                processed_frames, frames = [], []
+    finally:
+        _safe_put(input_queue, None)
+
+def infer(hailo_inference, input_queue, output_queue, stop_event=None):
     """
     Main inference loop that pulls data from the input queue, runs asynchronous
     inference, and pushes results to the output queue.
@@ -430,8 +571,12 @@ def infer(hailo_inference, input_queue, output_queue):
     Returns:
         None
     """
-    while True:
-        next_batch = input_queue.get()
+    stop_event = stop_event or threading.Event()
+    while not stop_event.is_set():
+        try:
+            next_batch = input_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
         if not next_batch:
             break  # Stop signal received
 
@@ -441,21 +586,26 @@ def infer(hailo_inference, input_queue, output_queue):
         inference_callback_fn = partial(
             inference_callback,
             input_batch=input_batch,
-            output_queue=output_queue
+            output_queue=output_queue,
+            stop_event=stop_event
         )
 
         # Run async inference
         hailo_inference.run(preprocessed_batch, inference_callback_fn)
 
     # Release resources and context
-    hailo_inference.close()
+    try:
+        hailo_inference.close()
+    except Exception:
+        pass
 
 
 def inference_callback(
     completion_info,
     bindings_list: list,
     input_batch: list,
-    output_queue: queue.Queue
+    output_queue: queue.Queue,
+    stop_event=None
 ) -> None:
     """
     infernce callback to handle inference results and push them to a queue.
@@ -479,7 +629,12 @@ def inference_callback(
                     )
                     for name in bindings._output_names
                 }
-            output_queue.put((input_batch[i], result))
+            if stop_event is not None and stop_event.is_set():
+                return
+            if stop_event is None:
+                output_queue.put((input_batch[i], result))
+            else:
+                _put_latest(output_queue, (input_batch[i], result), stop_event)
 
 
 def main() -> None:
